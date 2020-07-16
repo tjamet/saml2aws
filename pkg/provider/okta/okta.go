@@ -54,8 +54,9 @@ var (
 
 // Client is a wrapper representing a Okta SAML client
 type Client struct {
-	client *provider.HTTPClient
-	mfa    string
+	client       *provider.HTTPClient
+	mfa          string
+	destinations []string
 }
 
 // AuthRequest represents an mfa okta request
@@ -84,10 +85,19 @@ func New(idpAccount *cfg.IDPAccount) (*Client, error) {
 	// assign a response validator to ensure all responses are either success or a redirect
 	// this is to avoid have explicit checks for every single response
 	client.CheckResponseStatus = provider.SuccessOrRedirectResponseValidator
+	destinations := []string{
+		"https://signin.aws.amazon.com/saml",
+		"https://signin.amazonaws-us-gov.com/saml",
+		"https://signin.amazonaws.cn/saml",
+	}
+	if len(idpAccount.SigninURLS) != 0 {
+		destinations = idpAccount.SigninURLS
+	}
 
 	return &Client{
-		client: client,
-		mfa:    idpAccount.MFA,
+		client:       client,
+		mfa:          idpAccount.MFA,
+		destinations: destinations,
 	}, nil
 }
 
@@ -177,7 +187,7 @@ func (oc *Client) follow(ctx context.Context, req *http.Request, loginDetails *c
 
 	var handler func(context.Context, *goquery.Document) (context.Context, *http.Request, error)
 
-	if docIsFormRedirectToAWS(doc) {
+	if docIsFormRedirectToAWS(oc, doc) {
 		logger.WithField("type", "saml-response-to-aws").Debug("doc detect")
 		if samlResponse, ok := extractSAMLResponse(doc); ok {
 			decodedSamlResponse, err := base64.StdEncoding.DecodeString(samlResponse)
@@ -267,14 +277,9 @@ func docIsFormResume(doc *goquery.Document) bool {
 	return doc.Find("input[name=\"RelayState\"]").Size() == 1
 }
 
-func docIsFormRedirectToAWS(doc *goquery.Document) bool {
-	urls := []string{"form[action=\"https://signin.aws.amazon.com/saml\"]",
-		"form[action=\"https://signin.amazonaws-us-gov.com/saml\"]",
-		"form[action=\"https://signin.amazonaws.cn/saml\"]",
-	}
-
-	for _, value := range urls {
-		if doc.Find(value).Size() > 0 {
+func docIsFormRedirectToAWS(oc *Client, doc *goquery.Document) bool {
+	for _, value := range oc.destinations {
+		if doc.Find(fmt.Sprintf(`form[action="%s"]`, value)).Size() > 0 {
 			return true
 		}
 	}
